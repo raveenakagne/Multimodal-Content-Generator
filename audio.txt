@@ -1,0 +1,26 @@
+# def process_audio_query(query_id, raw_data_path):
+#     ensure_temp_dir()
+#     local_audio_path = f"./temp/{query_id}.wav"
+
+#     # Download the audio file
+#     download_file_from_gcs(raw_data_path, local_audio_path)
+
+#     # Load and preprocess the audio
+#     speech, sr = librosa.load(local_audio_path, sr=16000)
+#     inputs = audio_processor(speech, sampling_rate=sr, return_tensors="pt")
+#     with torch.no_grad():
+#         outputs = audio_model(**inputs)
+#     embedding_vector = outputs.last_hidden_state.mean(dim=1).detach().numpy().flatten()
+
+#     # Normalize the embedding
+#     embedding_vector /= np.linalg.norm(embedding_vector)
+
+#     # Store the embedding using FAISS
+#     embedding_id = store_embedding_in_vector_db(query_id, embedding_vector)
+
+#     # Update Firestore
+#     doc_ref = firestore_client.collection('queries').document(query_id)
+#     doc_ref.update({'embedding_id': embedding_id})
+
+#     # Clean up
+#     os.remove(local_audio_path)
