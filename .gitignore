@@ -3,3 +3,5 @@ venv/
 silken-elevator-440900-h5-6ce1ab8b7ca4.json
 creds.py
 mcg-service-account-key.json
+temp
+app.log
