@@ -578,67 +578,67 @@ if st.button("Submit"):
                 links = scraped_data.get('links', [])
                 images = scraped_data.get('screenshot', [])  # Assuming 'screenshot' contains image URLs
 
-                if not markdown_content and not html_content:
-                    st.warning("No extractable text found at the provided URL.")
+                # if not markdown_content and not html_content:
+                #     st.warning("No extractable text found at the provided URL.")
 
-                # Save markdown or html locally
-                if markdown_content:
-                    local_content_path = f"./temp/{query_id}.md"
-                    try:
-                        with open(local_content_path, 'w', encoding='utf-8') as f:
-                            f.write(markdown_content)
-                        data["raw_data_path"] = f"gs://{raw_data_bucket}/url/{query_id}.md"
-                        logging.info(f"Scraped markdown content saved locally at {local_content_path}.")
-                    except Exception as e:
-                        st.error(f"Failed to save scraped markdown locally: {e}")
-                        logging.error(f"Failed to save scraped markdown locally: {e}", exc_info=True)
-                        st.stop()
-                elif html_content:
-                    local_content_path = f"./temp/{query_id}.html"
-                    try:
-                        with open(local_content_path, 'w', encoding='utf-8') as f:
-                            f.write(html_content)
-                        data["raw_data_path"] = f"gs://{raw_data_bucket}/url/{query_id}.html"
-                        logging.info(f"Scraped HTML content saved locally at {local_content_path}.")
-                    except Exception as e:
-                        st.error(f"Failed to save scraped HTML locally: {e}")
-                        logging.error(f"Failed to save scraped HTML locally: {e}", exc_info=True)
-                        st.stop()
-                else:
-                    st.warning("No content to save from the URL.")
-                    local_content_path = None
+                # # Save markdown or html locally
+                # if markdown_content:
+                #     local_content_path = f"./temp/{query_id}.md"
+                #     try:
+                #         with open(local_content_path, 'w', encoding='utf-8') as f:
+                #             f.write(markdown_content)
+                #         data["raw_data_path"] = f"gs://{raw_data_bucket}/url/{query_id}.md"
+                #         logging.info(f"Scraped markdown content saved locally at {local_content_path}.")
+                #     except Exception as e:
+                #         st.error(f"Failed to save scraped markdown locally: {e}")
+                #         logging.error(f"Failed to save scraped markdown locally: {e}", exc_info=True)
+                #         st.stop()
+                # elif html_content:
+                #     local_content_path = f"./temp/{query_id}.html"
+                #     try:
+                #         with open(local_content_path, 'w', encoding='utf-8') as f:
+                #             f.write(html_content)
+                #         data["raw_data_path"] = f"gs://{raw_data_bucket}/url/{query_id}.html"
+                #         logging.info(f"Scraped HTML content saved locally at {local_content_path}.")
+                #     except Exception as e:
+                #         st.error(f"Failed to save scraped HTML locally: {e}")
+                #         logging.error(f"Failed to save scraped HTML locally: {e}", exc_info=True)
+                #         st.stop()
+                # else:
+                #     st.warning("No content to save from the URL.")
+                #     local_content_path = None
 
             except Exception as e:
                 st.error(f"Failed to scrape the URL: {e}")
                 logging.error(f"Failed to scrape the URL: {e}", exc_info=True)
                 st.stop()
 
-            # Continue processing only if content was saved
-            if local_content_path:
-                try:
-                    # Upload content to GCS
-                    bucket = storage_client.bucket(raw_data_bucket)
-                    if markdown_content:
-                        blob = bucket.blob(f"url/{query_id}.md")
-                    else:
-                        blob = bucket.blob(f"url/{query_id}.html")
-                    blob.upload_from_filename(local_content_path)
-                    st.write("Scraped content uploaded to GCS.")
-                    logging.info(f"Scraped content uploaded to gs://{raw_data_bucket}/url/{query_id}.{ 'md' if markdown_content else 'html' }")
-                except Exception as e:
-                    st.error(f"Failed to upload scraped content to GCS: {e}")
-                    logging.error(f"Failed to upload scraped content to GCS: {e}", exc_info=True)
-                    os.remove(local_content_path)
-                    st.stop()
+            # # Continue processing only if content was saved
+            # if local_content_path:
+            #     try:
+            #         # Upload content to GCS
+            #         bucket = storage_client.bucket(raw_data_bucket)
+            #         if markdown_content:
+            #             blob = bucket.blob(f"url/{query_id}.md")
+            #         else:
+            #             blob = bucket.blob(f"url/{query_id}.html")
+            #         blob.upload_from_filename(local_content_path)
+            #         st.write("Scraped content uploaded to GCS.")
+            #         logging.info(f"Scraped content uploaded to gs://{raw_data_bucket}/url/{query_id}.{ 'md' if markdown_content else 'html' }")
+            #     except Exception as e:
+            #         st.error(f"Failed to upload scraped content to GCS: {e}")
+            #         logging.error(f"Failed to upload scraped content to GCS: {e}", exc_info=True)
+            #         os.remove(local_content_path)
+            #         st.stop()
 
-                # Update metadata with scraped content
-                data["metadata"]["scraped_content"] = markdown_content if markdown_content else html_content
+                # # Update metadata with scraped content
+                # data["metadata"]["scraped_content"] = markdown_content if markdown_content else html_content
 
-                try:
-                    os.remove(local_content_path)
-                    logging.info(f"Local scraped content file {local_content_path} removed after upload.")
-                except Exception as e:
-                    logging.warning(f"Failed to remove local scraped content file {local_content_path}: {e}")
+                # try:
+                #     os.remove(local_content_path)
+                #     logging.info(f"Local scraped content file {local_content_path} removed after upload.")
+                # except Exception as e:
+                #     logging.warning(f"Failed to remove local scraped content file {local_content_path}: {e}")
 
             # Generate and store embedding for text
             st.info("Generating embedding for scraped text...")
@@ -823,8 +823,8 @@ if st.button("Submit"):
 
             st.success("Your URL content and embeddings have been uploaded successfully!")
             st.write("Query ID:", query_id)
-            st.write("Raw Data Path:", data["raw_data_path"])
-            st.write("Embedding Path:", data["embedding_path"])
+            # st.write("Raw Data Path:", data["raw_data_path"])
+            # st.write("Embedding Path:", data["embedding_path"])
 
             # Display image raw data paths and embedding paths if any
             for key in data:
@@ -833,26 +833,29 @@ if st.button("Submit"):
                 if key.startswith("image_") and key.endswith("_embedding_path"):
                     st.write(f"{key}: {data[key]}")
 
+        
         # Implement a delay to allow Cloud Functions to process (e.g., 5 seconds)
         st.info("Waiting for Cloud Functions to process the data...")
-        time.sleep(15)  # Adjust the duration as needed
+        if modality == "Image" :
+            time.sleep(15)  # Adjust the duration as needed
+        else:
+            time.sleep(3)
+        #  # Retrieve and display Firestore metadata
+        # st.header("Firestore Metadata")
+        # try:
+        #     doc_ref = firestore_client.collection("queries").document(query_id)
+        #     doc = doc_ref.get()
 
-         # Retrieve and display Firestore metadata
-        st.header("Firestore Metadata")
-        try:
-            doc_ref = firestore_client.collection("queries").document(query_id)
-            doc = doc_ref.get()
-
-            if doc.exists:
-                    doc_data = doc.to_dict()
-                    st.json(doc_data)
-                    logging.info(f"Query results for {query_id} retrieved successfully.")
-            else:
-                    st.write("Document not found in Firestore.")
-                    logging.warning(f"Document {query_id} not found in Firestore.")
-        except Exception as e:
-                st.error(f"Failed to retrieve document: {e}")
-                logging.error(f"Failed to retrieve document {query_id}: {e}", exc_info=True)
+        #     if doc.exists:
+        #             doc_data = doc.to_dict()
+        #             st.json(doc_data)
+        #             logging.info(f"Query results for {query_id} retrieved successfully.")
+        #     else:
+        #             st.write("Document not found in Firestore.")
+        #             logging.warning(f"Document {query_id} not found in Firestore.")
+        # except Exception as e:
+        #         st.error(f"Failed to retrieve document: {e}")
+        #         logging.error(f"Failed to retrieve document {query_id}: {e}", exc_info=True)
 
 
     else:
