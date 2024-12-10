@@ -11,10 +11,10 @@ import chromadb
 from chromadb.config import Settings
 from transformers import CLIPProcessor, CLIPModel
 import PyPDF2  # For PDF processing
-import requests
-from firecrawl import FirecrawlApp  # Firecrawl SDK
-from dotenv import load_dotenv  # For loading environment variables
 import logging
+from firecrawl import FirecrawlApp  # Firecrawl SDK
+import requests
+import time  # For implementing delays
 import warnings
 
 # Suppress specific warnings if necessary
@@ -28,9 +28,7 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
-
-# Load environment variables from .env file (if present)
-load_dotenv()
+logging.info("Streamlit app started.")
 
 # Initialize GCP clients
 try:
@@ -40,6 +38,21 @@ try:
 except Exception as e:
     st.error(f"Failed to initialize GCP clients: {e}")
     logging.error(f"Failed to initialize GCP clients: {e}", exc_info=True)
+    st.stop()
+
+# Initialize FirecrawlApp with API key
+firecrawl_api_key = os.getenv('FIRECRAWL_API_KEY')
+if not firecrawl_api_key:
+    st.error("Firecrawl API key not found. Please set the FIRECRAWL_API_KEY environment variable.")
+    logging.error("Firecrawl API key not found.")
+    st.stop()
+
+try:
+    firecrawl_app = FirecrawlApp(api_key=firecrawl_api_key)
+    logging.info("FirecrawlApp initialized successfully.")
+except Exception as e:
+    st.error(f"Failed to initialize FirecrawlApp: {e}")
+    logging.error(f"Failed to initialize FirecrawlApp: {e}", exc_info=True)
     st.stop()
 
 # Set GCP bucket names
@@ -56,9 +69,7 @@ def initialize_chroma():
                 persist_directory="./chroma_db"    # Directory to store Chroma data
             )
         )
-        # It's better to have separate collections for each modality
-        # For simplicity, using a single collection named "embeddings"
-        collection = client.get_or_create_collection("embeddings")
+        collection = client.get_or_create_collection("audio_embeddings")
         st.write("Chroma DB initialized.")
         logging.info("Chroma DB initialized successfully.")
         return collection
@@ -96,21 +107,6 @@ def load_models():
 # Correctly unpack the returned models
 text_embedding_model, clip_model, clip_processor = load_models()
 
-# Initialize FirecrawlApp with API key
-firecrawl_api_key = os.getenv('FIRECRAWL_API_KEY')
-if not firecrawl_api_key:
-    st.error("Firecrawl API key not found. Please set the FIRECRAWL_API_KEY environment variable.")
-    logging.error("Firecrawl API key not found.")
-    st.stop()
-
-try:
-    firecrawl_app = FirecrawlApp(api_key=firecrawl_api_key)
-    logging.info("FirecrawlApp initialized successfully.")
-except Exception as e:
-    st.error(f"Failed to initialize FirecrawlApp: {e}")
-    logging.error(f"Failed to initialize FirecrawlApp: {e}", exc_info=True)
-    st.stop()
-
 # Streamlit UI
 st.title("Multimodal Content Generation Input")
 
@@ -147,7 +143,7 @@ if st.button("Submit"):
     ):
         query_id = str(uuid.uuid4())
         st.session_state['query_id'] = query_id
-        timestamp = datetime.now(timezone.utc)
+        timestamp = datetime.now(timezone.utc)  # Use timezone-aware datetime
         data = {
             "timestamp": timestamp.isoformat(),
             "user_id": user_id,
@@ -219,25 +215,25 @@ if st.button("Submit"):
             os.remove(local_embedding_path)
             logging.info(f"Local embedding file {local_embedding_path} removed after upload.")
 
-            # Add embedding to Chroma DB
-            st.write("Adding embedding to Chroma DB...")
-            try:
-                chroma_collection.add(
-                    documents=[text_input],
-                    embeddings=[embedding_vector.tolist()],
-                    ids=[query_id],
-                    metadatas=[{
-                        "raw_data_path": data["raw_data_path"],
-                        "user_id": user_id,
-                        "timestamp": data["timestamp"],
-                        "modality": modality.lower()
-                    }]
-                )
-                st.write("Embedding added to Chroma DB.")
-                logging.info(f"Text embedding added to Chroma DB with ID {query_id}.")
-            except Exception as e:
-                st.error(f"Failed to add embedding to Chroma DB: {e}")
-                logging.error(f"Failed to add embedding to Chroma DB: {e}", exc_info=True)
+            # # Add embedding to Chroma DB
+            # st.write("Adding embedding to Chroma DB...")
+            # try:
+            #     chroma_collection.add(
+            #         documents=[text_input],
+            #         embeddings=[embedding_vector.tolist()],
+            #         ids=[query_id],
+            #         metadatas=[{
+            #             "raw_data_path": data["raw_data_path"],
+            #             "user_id": user_id,
+            #             "timestamp": data["timestamp"],
+            #             "modality": modality.lower()
+            #         }]
+            #     )
+            #     st.write("Embedding added to Chroma DB.")
+            #     logging.info(f"Text embedding added to Chroma DB with ID {query_id}.")
+            # except Exception as e:
+            #     st.error(f"Failed to add embedding to Chroma DB: {e}")
+            #     logging.error(f"Failed to add embedding to Chroma DB: {e}", exc_info=True)
 
             # Save metadata to Firestore
             try:
@@ -298,8 +294,8 @@ if st.button("Submit"):
                 st.write("Image embedding uploaded to GCS.")
                 logging.info(f"Image embedding uploaded to gs://{embedding_data_bucket}/images/{query_id}_embedding.npy")
             except Exception as e:
-                st.error(f"Failed to upload image embedding to GCS: {e}")
-                logging.error(f"Failed to upload image embedding to GCS: {e}", exc_info=True)
+                st.error(f"Failed to upload embedding to GCS: {e}")
+                logging.error(f"Failed to upload embedding to GCS: {e}", exc_info=True)
                 os.remove(local_embedding_path)
                 st.stop()
 
@@ -307,25 +303,25 @@ if st.button("Submit"):
             os.remove(local_embedding_path)
             logging.info(f"Local embedding file {local_embedding_path} removed after upload.")
 
-            # Add embedding to Chroma DB
-            st.write("Adding embedding to Chroma DB...")
-            try:
-                chroma_collection.add(
-                    documents=[f"Image document {query_id}"],
-                    embeddings=[embedding_vector.tolist()],
-                    ids=[query_id],
-                    metadatas=[{
-                        "raw_data_path": data["raw_data_path"],
-                        "user_id": user_id,
-                        "timestamp": data["timestamp"],
-                        "modality": modality.lower()
-                    }]
-                )
-                st.write("Embedding added to Chroma DB.")
-                logging.info(f"Image embedding added to Chroma DB with ID {query_id}.")
-            except Exception as e:
-                st.error(f"Failed to add embedding to Chroma DB: {e}")
-                logging.error(f"Failed to add embedding to Chroma DB: {e}", exc_info=True)
+            # # Add embedding to Chroma DB
+            # st.write("Adding embedding to Chroma DB...")
+            # try:
+            #     chroma_collection.add(
+            #         documents=[f"Image document {query_id}"],
+            #         embeddings=[embedding_vector.tolist()],
+            #         ids=[query_id],
+            #         metadatas=[{
+            #             "raw_data_path": data["raw_data_path"],
+            #             "user_id": user_id,
+            #             "timestamp": data["timestamp"],
+            #             "modality": modality.lower()
+            #         }]
+            #     )
+            #     st.write("Embedding added to Chroma DB.")
+            #     logging.info(f"Image embedding added to Chroma DB with ID {query_id}.")
+            # except Exception as e:
+            #     st.error(f"Failed to add embedding to Chroma DB: {e}")
+            #     logging.error(f"Failed to add embedding to Chroma DB: {e}", exc_info=True)
 
             # Save metadata to Firestore
             try:
@@ -385,8 +381,8 @@ if st.button("Submit"):
                 st.write("Audio embedding uploaded to GCS.")
                 logging.info(f"Audio embedding uploaded to gs://{embedding_data_bucket}/audio/{query_id}_embedding.npy")
             except Exception as e:
-                st.error(f"Failed to upload audio embedding to GCS: {e}")
-                logging.error(f"Failed to upload audio embedding to GCS: {e}", exc_info=True)
+                st.error(f"Failed to upload embedding to GCS: {e}")
+                logging.error(f"Failed to upload embedding to GCS: {e}", exc_info=True)
                 os.remove(local_embedding_path)
                 st.stop()
 
@@ -394,25 +390,25 @@ if st.button("Submit"):
             os.remove(local_embedding_path)
             logging.info(f"Local embedding file {local_embedding_path} removed after upload.")
 
-            # Add embedding to Chroma DB
-            st.write("Adding embedding to Chroma DB...")
-            try:
-                chroma_collection.add(
-                    documents=[f"Audio document {query_id}"],
-                    embeddings=[embedding_vector.tolist()],
-                    ids=[query_id],
-                    metadatas=[{
-                        "raw_data_path": data["raw_data_path"],
-                        "user_id": user_id,
-                        "timestamp": data["timestamp"],
-                        "modality": modality.lower()
-                    }]
-                )
-                st.write("Embedding added to Chroma DB.")
-                logging.info(f"Audio embedding added to Chroma DB with ID {query_id}.")
-            except Exception as e:
-                st.error(f"Failed to add embedding to Chroma DB: {e}")
-                logging.error(f"Failed to add embedding to Chroma DB: {e}", exc_info=True)
+            # # Add embedding to Chroma DB
+            # st.write("Adding embedding to Chroma DB...")
+            # try:
+            #     chroma_collection.add(
+            #         documents=[f"Audio document {query_id}"],
+            #         embeddings=[embedding_vector.tolist()],
+            #         ids=[query_id],
+            #         metadatas=[{
+            #             "raw_data_path": data["raw_data_path"],
+            #             "user_id": user_id,
+            #             "timestamp": data["timestamp"],
+            #             "modality": modality.lower()
+            #         }]
+            #     )
+            #     st.write("Embedding added to Chroma DB.")
+            #     logging.info(f"Audio embedding added to Chroma DB with ID {query_id}.")
+            # except Exception as e:
+            #     st.error(f"Failed to add embedding to Chroma DB: {e}")
+            #     logging.error(f"Failed to add embedding to Chroma DB: {e}", exc_info=True)
 
             # Save metadata to Firestore
             try:
@@ -439,23 +435,18 @@ if st.button("Submit"):
                 with open(local_pdf_path, 'wb') as f:
                     f.write(pdf_file.read())
                 logging.info(f"PDF saved locally at {local_pdf_path}.")
-            except Exception as e:
-                st.error(f"Failed to save PDF locally: {e}")
-                logging.error(f"Failed to save PDF locally: {e}", exc_info=True)
-                st.stop()
 
-            # Upload PDF to GCS
-            try:
+                # Upload PDF to GCS
                 bucket = storage_client.bucket(raw_data_bucket)
                 blob = bucket.blob(f"pdf/{query_id}.pdf")
                 blob.upload_from_filename(local_pdf_path)
                 st.write("PDF uploaded to GCS.")
                 logging.info(f"PDF uploaded to gs://{raw_data_bucket}/pdf/{query_id}.pdf")
             except Exception as e:
-                st.error(f"Failed to upload PDF to GCS: {e}")
-                logging.error(f"Failed to upload PDF to GCS: {e}", exc_info=True)
+                st.error(f"Failed to upload PDF: {e}")
                 if os.path.exists(local_pdf_path):
                     os.remove(local_pdf_path)
+                logging.error(f"Failed to upload PDF: {e}", exc_info=True)
                 st.stop()
 
             data["raw_data_path"] = f"gs://{raw_data_bucket}/pdf/{query_id}.pdf"
@@ -467,9 +458,7 @@ if st.button("Submit"):
                     reader = PyPDF2.PdfReader(f)
                     text = ""
                     for page in reader.pages:
-                        extracted_text = page.extract_text()
-                        if extracted_text:
-                            text += extracted_text
+                        text += page.extract_text() or ""
                 logging.info("Text extracted from PDF successfully.")
             except Exception as e:
                 st.error(f"Failed to extract text from PDF: {e}")
@@ -501,8 +490,8 @@ if st.button("Submit"):
                 st.write("PDF embedding uploaded to GCS.")
                 logging.info(f"PDF embedding uploaded to gs://{embedding_data_bucket}/pdf/{query_id}_embedding.npy")
             except Exception as e:
-                st.error(f"Failed to upload embedding to GCS: {e}")
-                logging.error(f"Failed to upload embedding to GCS: {e}", exc_info=True)
+                st.error(f"Failed to upload embedding: {e}")
+                logging.error(f"Failed to upload embedding: {e}", exc_info=True)
                 os.remove(local_embedding_path)
                 st.stop()
 
@@ -510,25 +499,25 @@ if st.button("Submit"):
             os.remove(local_embedding_path)
             logging.info(f"Local embedding file {local_embedding_path} removed after upload.")
 
-            # Add embedding to Chroma DB
-            st.write("Adding embedding to Chroma DB...")
-            try:
-                chroma_collection.add(
-                    documents=[text],  # Using extracted text as the document
-                    embeddings=[embedding_vector.tolist()],
-                    ids=[query_id],
-                    metadatas=[{
-                        "raw_data_path": data["raw_data_path"],
-                        "user_id": user_id,
-                        "timestamp": data["timestamp"],
-                        "modality": modality.lower()
-                    }]
-                )
-                st.write("Embedding added to Chroma DB.")
-                logging.info(f"PDF embedding added to Chroma DB with ID {query_id}.")
-            except Exception as e:
-                st.error(f"Failed to add embedding to Chroma DB: {e}")
-                logging.error(f"Failed to add embedding to Chroma DB: {e}", exc_info=True)
+            # # Add embedding to Chroma DB
+            # st.write("Adding embedding to Chroma DB...")
+            # try:
+            #     chroma_collection.add(
+            #         documents=[text],  # Using extracted text as the document
+            #         embeddings=[embedding_vector.tolist()],
+            #         ids=[query_id],
+            #         metadatas=[{
+            #             "raw_data_path": data["raw_data_path"],
+            #             "user_id": user_id,
+            #             "timestamp": data["timestamp"],
+            #             "modality": modality.lower()
+            #         }]
+            #     )
+            #     st.write("Embedding added to Chroma DB.")
+            #     logging.info(f"PDF embedding added to Chroma DB with ID {query_id}.")
+            # except Exception as e:
+            #     st.error(f"Failed to add embedding to Chroma DB: {e}")
+            #     logging.error(f"Failed to add embedding to Chroma DB: {e}", exc_info=True)
 
             # Save metadata to Firestore
             try:
@@ -572,37 +561,49 @@ if st.button("Submit"):
                             'removeBase64Images': True
                         }
                     )
-            
+
                 # Log the entire response for debugging
                 st.write("Scrape Response:", scrape_response)
                 logging.info(f"Scrape Response: {scrape_response}")
-            
-                if not scrape_response.get('success'):
-                    error_message = scrape_response.get('data', {}).get('error', 'Unknown error occurred.')
-                    st.error(f"Firecrawl failed to scrape the URL. Error: {error_message}")
-                    logging.error(f"Firecrawl failed to scrape the URL. Error: {error_message}")
-                    st.stop()
-            
+
+                # if not scrape_response.get('success'):
+                #     error_message = scrape_response.get('data', {}).get('error', 'Unknown error occurred.')
+                #     st.error(f"Firecrawl failed to scrape the URL. Error: {error_message}")
+                #     logging.error(f"Firecrawl failed to scrape the URL. Error: {error_message}")
+                #     st.stop()
+
                 scraped_data = scrape_response.get('data', {})
                 markdown_content = scraped_data.get('markdown', '')
                 html_content = scraped_data.get('html', '')
                 links = scraped_data.get('links', [])
                 images = scraped_data.get('screenshot', [])  # Assuming 'screenshot' contains image URLs
-            
+
                 if not markdown_content and not html_content:
                     st.warning("No extractable text found at the provided URL.")
-            
+
                 # Save markdown or html locally
                 if markdown_content:
                     local_content_path = f"./temp/{query_id}.md"
-                    with open(local_content_path, 'w', encoding='utf-8') as f:
-                        f.write(markdown_content)
-                    data["raw_data_path"] = f"gs://{raw_data_bucket}/url/{query_id}.md"
+                    try:
+                        with open(local_content_path, 'w', encoding='utf-8') as f:
+                            f.write(markdown_content)
+                        data["raw_data_path"] = f"gs://{raw_data_bucket}/url/{query_id}.md"
+                        logging.info(f"Scraped markdown content saved locally at {local_content_path}.")
+                    except Exception as e:
+                        st.error(f"Failed to save scraped markdown locally: {e}")
+                        logging.error(f"Failed to save scraped markdown locally: {e}", exc_info=True)
+                        st.stop()
                 elif html_content:
                     local_content_path = f"./temp/{query_id}.html"
-                    with open(local_content_path, 'w', encoding='utf-8') as f:
-                        f.write(html_content)
-                    data["raw_data_path"] = f"gs://{raw_data_bucket}/url/{query_id}.html"
+                    try:
+                        with open(local_content_path, 'w', encoding='utf-8') as f:
+                            f.write(html_content)
+                        data["raw_data_path"] = f"gs://{raw_data_bucket}/url/{query_id}.html"
+                        logging.info(f"Scraped HTML content saved locally at {local_content_path}.")
+                    except Exception as e:
+                        st.error(f"Failed to save scraped HTML locally: {e}")
+                        logging.error(f"Failed to save scraped HTML locally: {e}", exc_info=True)
+                        st.stop()
                 else:
                     st.warning("No content to save from the URL.")
                     local_content_path = None
@@ -630,164 +631,184 @@ if st.button("Submit"):
                     os.remove(local_content_path)
                     st.stop()
 
+                # Update metadata with scraped content
                 data["metadata"]["scraped_content"] = markdown_content if markdown_content else html_content
-                os.remove(local_content_path)
-                logging.info(f"Local scraped content file {local_content_path} removed after upload.")
+
+                try:
+                    os.remove(local_content_path)
+                    logging.info(f"Local scraped content file {local_content_path} removed after upload.")
+                except Exception as e:
+                    logging.warning(f"Failed to remove local scraped content file {local_content_path}: {e}")
 
             # Generate and store embedding for text
             st.info("Generating embedding for scraped text...")
             try:
                 text_to_embed = markdown_content if markdown_content else html_content
-                embedding_vector = text_embedding_model.encode(text_to_embed)
-                embedding_vector /= np.linalg.norm(embedding_vector)
-                logging.info("Scraped text embedding generated successfully.")
+                if text_to_embed:
+                    embedding_vector = text_embedding_model.encode(text_to_embed)
+                    embedding_vector /= np.linalg.norm(embedding_vector)
+                    logging.info("Scraped text embedding generated successfully.")
+                else:
+                    embedding_vector = None
+                    logging.warning("No text to embed.")
             except Exception as e:
                 st.error(f"Failed to generate embedding: {e}")
                 logging.error(f"Failed to generate embedding: {e}", exc_info=True)
                 st.stop()
 
-            # Save embedding as .npy locally and upload to GCS
-            local_embedding_path = f"./temp/{query_id}_embedding.npy"
-            try:
-                np.save(local_embedding_path, embedding_vector)
-                embedding_bucket = storage_client.bucket(embedding_data_bucket)
-                if markdown_content:
-                    embedding_blob = embedding_bucket.blob(f"url/{query_id}_embedding.npy")
-                else:
-                    embedding_blob = embedding_bucket.blob(f"url/{query_id}_embedding_embedding.npy")
-                embedding_blob.upload_from_filename(local_embedding_path)
-                st.write("Text embedding uploaded to GCS.")
-                logging.info(f"Text embedding uploaded to gs://{embedding_data_bucket}/url/{query_id}_embedding.npy")
-            except Exception as e:
-                st.error(f"Failed to upload embedding to GCS: {e}")
-                logging.error(f"Failed to upload embedding to GCS: {e}", exc_info=True)
-                os.remove(local_embedding_path)
-                st.stop()
+            if embedding_vector is not None:
+                # Save embedding as .npy locally and upload to GCS
+                local_embedding_path = f"./temp/{query_id}_embedding.npy"
+                try:
+                    np.save(local_embedding_path, embedding_vector)
+                    embedding_bucket = storage_client.bucket(embedding_data_bucket)
+                    if markdown_content:
+                        embedding_blob = embedding_bucket.blob(f"url/{query_id}_embedding.npy")
+                    else:
+                        embedding_blob = embedding_bucket.blob(f"url/{query_id}_embedding_embedding.npy")
+                    embedding_blob.upload_from_filename(local_embedding_path)
+                    st.write("Text embedding uploaded to GCS.")
+                    logging.info(f"Text embedding uploaded to gs://{embedding_data_bucket}/url/{query_id}_embedding.npy")
+                except Exception as e:
+                    st.error(f"Failed to upload embedding to GCS: {e}")
+                    logging.error(f"Failed to upload embedding to GCS: {e}", exc_info=True)
+                    os.remove(local_embedding_path)
+                    st.stop()
 
-            data["embedding_path"] = f"gs://{embedding_data_bucket}/url/{query_id}_embedding.npy"
-            os.remove(local_embedding_path)
-            logging.info(f"Local embedding file {local_embedding_path} removed after upload.")
+                data["embedding_path"] = f"gs://{embedding_data_bucket}/url/{query_id}_embedding.npy"
 
-            # Add text embedding to Chroma DB
-            st.write("Adding text embedding to Chroma DB...")
-            try:
-                chroma_collection.add(
-                    documents=[text_to_embed],
-                    embeddings=[embedding_vector.tolist()],
-                    ids=[query_id],
-                    metadatas=[{
-                        "raw_data_path": data["raw_data_path"],
-                        "user_id": user_id,
-                        "timestamp": data["timestamp"],
-                        "modality": modality.lower()
-                    }]
-                )
-                st.write("Text embedding added to Chroma DB.")
-                logging.info(f"Text embedding added to Chroma DB with ID {query_id}.")
-            except Exception as e:
-                st.error(f"Failed to add embedding to Chroma DB: {e}")
-                logging.error(f"Failed to add embedding to Chroma DB: {e}", exc_info=True)
+                try:
+                    os.remove(local_embedding_path)
+                    logging.info(f"Local embedding file {local_embedding_path} removed after upload.")
+                except Exception as e:
+                    logging.warning(f"Failed to remove local embedding file {local_embedding_path}: {e}")
 
-            # Process images if any
-            if images:
-                st.info("Processing images from scraped content...")
-                image_paths = []
-                for idx, img_url in enumerate(images):
-                    try:
-                        img_response = requests.get(img_url, timeout=10)
-                        if img_response.status_code == 200:
-                            img_extension = img_url.split('.')[-1].split('?')[0]  # Handle query params
-                            img_extension = img_extension.lower() if img_url else 'jpg'
-                            img_extension = img_extension if img_extension in ['png', 'jpg', 'jpeg'] else 'jpg'
-                            local_image_path = f"./temp/{query_id}_image_{idx}.{img_extension}"
-                            with open(local_image_path, 'wb') as img_file:
-                                img_file.write(img_response.content)
-                            image_paths.append(local_image_path)
-                            st.write(f"Downloaded image {idx+1} from scraped content.")
-                            logging.info(f"Downloaded image {idx+1} from {img_url}.")
-                    except Exception as e:
-                        st.warning(f"Failed to download image {idx+1} from scraped content: {e}")
-                        logging.warning(f"Failed to download image {idx+1} from scraped content: {e}")
+            #     # Add text embedding to Chroma DB
+            #     st.write("Adding text embedding to Chroma DB...")
+            #     try:
+            #         chroma_collection.add(
+            #             documents=[text_to_embed],
+            #             embeddings=[embedding_vector.tolist()],
+            #             ids=[query_id],
+            #             metadatas=[{
+            #                 "raw_data_path": data["raw_data_path"],
+            #                 "user_id": user_id,
+            #                 "timestamp": data["timestamp"],
+            #                 "modality": modality.lower()
+            #             }]
+            #         )
+            #         st.write("Text embedding added to Chroma DB.")
+            #         logging.info(f"Text embedding added to Chroma DB with ID {query_id}.")
+            #     except Exception as e:
+            #         st.error(f"Failed to add text embedding to Chroma DB: {e}")
+            #         logging.error(f"Failed to add text embedding to Chroma DB: {e}", exc_info=True)
 
-                # Upload images to GCS and generate embeddings
-                if image_paths:
-                    for idx, local_image_path in enumerate(image_paths):
-                        try:
-                            # Upload image to GCS
-                            bucket = storage_client.bucket(raw_data_bucket)
-                            blob = bucket.blob(f"url_images/{query_id}_image_{idx}.{local_image_path.split('.')[-1]}")
-                            blob.upload_from_filename(local_image_path)
-                            st.write(f"Uploaded image {idx+1} to GCS.")
-                            logging.info(f"Uploaded image {idx+1} to gs://{raw_data_bucket}/url_images/{query_id}_image_{idx}.{local_image_path.split('.')[-1]}")
-                            data[f"image_{idx}_raw_data_path"] = f"gs://{raw_data_bucket}/url_images/{query_id}_image_{idx}.{local_image_path.split('.')[-1]}"
-                        except Exception as e:
-                            st.error(f"Failed to upload image {idx+1} to GCS: {e}")
-                            logging.error(f"Failed to upload image {idx+1} to GCS: {e}", exc_info=True)
-                            os.remove(local_image_path)
-                            continue
+            # # Process images if any
+            # if images:
+            #     st.info("Processing images from scraped content...")
+            #     image_paths = []
+            #     for idx, img_url in enumerate(images):
+            #         try:
+            #             img_response = requests.get(img_url, timeout=10)
+            #             if img_response.status_code == 200:
+            #                 img_extension = img_url.split('.')[-1].split('?')[0]  # Handle query params
+            #                 img_extension = img_extension.lower() if img_url else 'jpg'
+            #                 img_extension = img_extension if img_extension in ['png', 'jpg', 'jpeg'] else 'jpg'
+            #                 local_image_path = f"./temp/{query_id}_image_{idx}.{img_extension}"
+            #                 with open(local_image_path, 'wb') as img_file:
+            #                     img_file.write(img_response.content)
+            #                 image_paths.append(local_image_path)
+            #                 st.write(f"Downloaded image {idx+1} from scraped content.")
+            #                 logging.info(f"Downloaded image {idx+1} from {img_url}.")
+            #         except Exception as e:
+            #             st.warning(f"Failed to download image {idx+1} from scraped content: {e}")
+            #             logging.warning(f"Failed to download image {idx+1} from scraped content: {e}")
 
-                        # Generate and store embedding for image
-                        st.info(f"Generating embedding for image {idx+1}...")
-                        try:
-                            image = Image.open(local_image_path).convert("RGB")
-                            inputs = clip_processor(images=image, return_tensors="pt")
-                            with torch.no_grad():
-                                outputs = clip_model.get_image_features(**inputs)
-                            image_embedding_vector = outputs.detach().numpy().flatten()
-                            image_embedding_vector /= np.linalg.norm(image_embedding_vector)
-                            logging.info(f"Image {idx+1} embedding generated successfully.")
-                        except Exception as e:
-                            st.error(f"Failed to generate embedding for image {idx+1}: {e}")
-                            logging.error(f"Failed to generate embedding for image {idx+1}: {e}", exc_info=True)
-                            os.remove(local_image_path)
-                            continue
+            #     # Upload images to GCS and generate embeddings
+            #     if image_paths:
+            #         for idx, local_image_path in enumerate(image_paths):
+            #             try:
+            #                 # Upload image to GCS
+            #                 bucket = storage_client.bucket(raw_data_bucket)
+            #                 blob = bucket.blob(f"url_images/{query_id}_image_{idx}.{local_image_path.split('.')[-1]}")
+            #                 blob.upload_from_filename(local_image_path)
+            #                 st.write(f"Uploaded image {idx+1} to GCS.")
+            #                 logging.info(f"Uploaded image {idx+1} to gs://{raw_data_bucket}/url_images/{query_id}_image_{idx}.{local_image_path.split('.')[-1]}")
+            #                 data[f"image_{idx}_raw_data_path"] = f"gs://{raw_data_bucket}/url_images/{query_id}_image_{idx}.{local_image_path.split('.')[-1]}"
+            #             except Exception as e:
+            #                 st.error(f"Failed to upload image {idx+1} to GCS: {e}")
+            #                 logging.error(f"Failed to upload image {idx+1} to GCS: {e}", exc_info=True)
+            #                 os.remove(local_image_path)
+            #                 continue
 
-                        # Save embedding as .npy locally and upload to GCS
-                        local_image_embedding_path = f"./temp/{query_id}_image_{idx}_embedding.npy"
-                        try:
-                            np.save(local_image_embedding_path, image_embedding_vector)
-                            embedding_bucket = storage_client.bucket(embedding_data_bucket)
-                            embedding_blob = embedding_bucket.blob(f"url_images/{query_id}_image_{idx}_embedding.npy")
-                            embedding_blob.upload_from_filename(local_image_embedding_path)
-                            st.write(f"Image {idx+1} embedding uploaded to GCS.")
-                            logging.info(f"Image {idx+1} embedding uploaded to gs://{embedding_data_bucket}/url_images/{query_id}_image_{idx}_embedding.npy")
-                        except Exception as e:
-                            st.error(f"Failed to upload embedding for image {idx+1}: {e}")
-                            logging.error(f"Failed to upload embedding for image {idx+1}: {e}", exc_info=True)
-                            os.remove(local_image_embedding_path)
-                            continue
+            #             # Generate and store embedding for image
+            #             st.info(f"Generating embedding for image {idx+1}...")
+            #             try:
+            #                 image = Image.open(local_image_path).convert("RGB")
+            #                 inputs = clip_processor(images=image, return_tensors="pt")
+            #                 with torch.no_grad():
+            #                     outputs = clip_model.get_image_features(**inputs)
+            #                 image_embedding_vector = outputs.detach().numpy().flatten()
+            #                 image_embedding_vector /= np.linalg.norm(image_embedding_vector)
+            #                 logging.info(f"Image {idx+1} embedding generated successfully.")
+            #             except Exception as e:
+            #                 st.error(f"Failed to generate embedding for image {idx+1}: {e}")
+            #                 logging.error(f"Failed to generate embedding for image {idx+1}: {e}", exc_info=True)
+            #                 os.remove(local_image_path)
+            #                 continue
 
-                        data[f"image_{idx}_embedding_path"] = f"gs://{embedding_data_bucket}/url_images/{query_id}_image_{idx}_embedding.npy"
-                        os.remove(local_image_embedding_path)
-                        logging.info(f"Local image embedding file {local_image_embedding_path} removed after upload.")
+            #             # Save embedding as .npy locally and upload to GCS
+            #             local_image_embedding_path = f"./temp/{query_id}_image_{idx}_embedding.npy"
+            #             try:
+            #                 np.save(local_image_embedding_path, image_embedding_vector)
+            #                 embedding_bucket = storage_client.bucket(embedding_data_bucket)
+            #                 embedding_blob = embedding_bucket.blob(f"url_images/{query_id}_image_{idx}_embedding.npy")
+            #                 embedding_blob.upload_from_filename(local_image_embedding_path)
+            #                 st.write(f"Image {idx+1} embedding uploaded to GCS.")
+            #                 logging.info(f"Image {idx+1} embedding uploaded to gs://{embedding_data_bucket}/url_images/{query_id}_image_{idx}_embedding.npy")
+            #             except Exception as e:
+            #                 st.error(f"Failed to upload embedding for image {idx+1}: {e}")
+            #                 logging.error(f"Failed to upload embedding for image {idx+1}: {e}", exc_info=True)
+            #                 os.remove(local_image_embedding_path)
+            #                 continue
 
-                        # Add image embedding to Chroma DB
-                        st.write(f"Adding image {idx+1} embedding to Chroma DB...")
-                        try:
-                            chroma_collection.add(
-                                documents=[f"Image {idx+1} from URL {query_id}"],
-                                embeddings=[image_embedding_vector.tolist()],
-                                ids=[f"{query_id}_image_{idx}"],
-                                metadatas=[{
-                                    "raw_data_path": data[f"image_{idx}_raw_data_path"],
-                                    "user_id": user_id,
-                                    "timestamp": data["timestamp"],
-                                    "modality": modality.lower()
-                                }]
-                            )
-                        #     st.write(f"Image {idx+1} embedding added to Chroma DB.")
-                        #     logging.info(f"Image {idx+1} embedding added to Chroma DB with ID {query_id}_image_{idx}.")
-                        except Exception as e:
-                            continue
-                            # st.error(f"Failed to add image {idx+1} embedding to Chroma DB: {e}")
-                            # logging.error(f"Failed to add image {idx+1} embedding to Chroma DB: {e}", exc_info=True)
+            #             data[f"image_{idx}_embedding_path"] = f"gs://{embedding_data_bucket}/url_images/{query_id}_image_{idx}_embedding.npy"
 
-                        # Clean up local image file
-                        os.remove(local_image_path)
-                        logging.info(f"Local image file {local_image_path} removed after processing.")
+            #             try:
+            #                 os.remove(local_image_embedding_path)
+            #                 logging.info(f"Local image embedding file {local_image_embedding_path} removed after upload.")
+            #             except Exception as e:
+            #                 logging.warning(f"Failed to remove local image embedding file {local_image_embedding_path}: {e}")
 
-            else:
-                st.info("No images found in the scraped content.")
+            #             # Add image embedding to Chroma DB
+            #             st.write(f"Adding image {idx+1} embedding to Chroma DB...")
+            #             try:
+            #                 chroma_collection.add(
+            #                     documents=[f"Image {idx+1} from URL {query_id}"],
+            #                     embeddings=[image_embedding_vector.tolist()],
+            #                     ids=[f"{query_id}_image_{idx}"],
+            #                     metadatas=[{
+            #                         "raw_data_path": data[f"image_{idx}_raw_data_path"],
+            #                         "user_id": user_id,
+            #                         "timestamp": data["timestamp"],
+            #                         "modality": modality.lower()
+            #                     }]
+            #                 )
+            #                 st.write(f"Image {idx+1} embedding added to Chroma DB.")
+            #                 logging.info(f"Image {idx+1} embedding added to Chroma DB with ID {query_id}_image_{idx}.")
+            #             except Exception as e:
+            #                 st.error(f"Failed to add image {idx+1} embedding to Chroma DB: {e}")
+            #                 logging.error(f"Failed to add image {idx+1} embedding to Chroma DB: {e}", exc_info=True)
+
+            #             # Clean up local image file
+            #             try:
+            #                 os.remove(local_image_path)
+            #                 logging.info(f"Local image file {local_image_path} removed after processing.")
+            #             except Exception as e:
+            #                 logging.warning(f"Failed to remove local image file {local_image_path}: {e}")
+
+            # else:
+            #     st.info("No images found in the scraped content.")
 
             # Save metadata to Firestore
             try:
@@ -804,6 +825,7 @@ if st.button("Submit"):
             st.write("Query ID:", query_id)
             st.write("Raw Data Path:", data["raw_data_path"])
             st.write("Embedding Path:", data["embedding_path"])
+
             # Display image raw data paths and embedding paths if any
             for key in data:
                 if key.startswith("image_") and key.endswith("_raw_data_path"):
@@ -811,25 +833,47 @@ if st.button("Submit"):
                 if key.startswith("image_") and key.endswith("_embedding_path"):
                     st.write(f"{key}: {data[key]}")
 
-            # Display query results
-            if st.session_state['query_id']:
-                query_id = st.session_state['query_id']
-                st.header("Query Results")
-                try:
-                    doc_ref = firestore_client.collection("queries").document(query_id)
-                    doc = doc_ref.get()
+        # Implement a delay to allow Cloud Functions to process (e.g., 5 seconds)
+        st.info("Waiting for Cloud Functions to process the data...")
+        time.sleep(15)  # Adjust the duration as needed
 
-                    if doc.exists:
-                        doc_data = doc.to_dict()
-                        st.json(doc_data)
-                        logging.info(f"Query results for {query_id} retrieved successfully.")
-                    else:
-                        st.write("Document not found in Firestore.")
-                        logging.warning(f"Document {query_id} not found in Firestore.")
-                except Exception as e:
-                    st.error(f"Failed to retrieve document: {e}")
-                    logging.error(f"Failed to retrieve document {query_id}: {e}", exc_info=True)
+         # Retrieve and display Firestore metadata
+        st.header("Firestore Metadata")
+        try:
+            doc_ref = firestore_client.collection("queries").document(query_id)
+            doc = doc_ref.get()
+
+            if doc.exists:
+                    doc_data = doc.to_dict()
+                    st.json(doc_data)
+                    logging.info(f"Query results for {query_id} retrieved successfully.")
+            else:
+                    st.write("Document not found in Firestore.")
+                    logging.warning(f"Document {query_id} not found in Firestore.")
+        except Exception as e:
+                st.error(f"Failed to retrieve document: {e}")
+                logging.error(f"Failed to retrieve document {query_id}: {e}", exc_info=True)
+
 
     else:
         st.error("Please provide valid input.")
         st.stop()
+
+    # Display query results
+    if st.session_state['query_id']:
+        query_id = st.session_state['query_id']
+        st.header("Query Results")
+        try:
+            doc_ref = firestore_client.collection("queries").document(query_id)
+            doc = doc_ref.get()
+
+            if doc.exists:
+                doc_data = doc.to_dict()
+                st.json(doc_data)
+                logging.info(f"Query results for {query_id} retrieved successfully.")
+            else:
+                st.write("Document not found in Firestore.")
+                logging.warning(f"Document {query_id} not found in Firestore.")
+        except Exception as e:
+            st.error(f"Failed to retrieve document: {e}")
+            logging.error(f"Failed to retrieve document {query_id}: {e}", exc_info=True)
