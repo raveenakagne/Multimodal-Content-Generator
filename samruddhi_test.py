@@ -8,10 +8,11 @@ from diffusers import StableDiffusionPipeline
 from audio_recorder_streamlit import audio_recorder
 from deepgram import Deepgram
 import requests
+import creds
  
 # Hugging Face login (replace with your token)
 from huggingface_hub import login
-login(token="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")
+login(token=creds.hf_token)
  
 # Deepgram API Key (replace with your actual key)
 DEEPGRAM_API_KEY = "16b691e04307a2eb6f22037aa88ba0989dbee035"
