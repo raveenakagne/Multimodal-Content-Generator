@@ -1,308 +1,565 @@
 import os
 import asyncio
-import gradio as gr
-import torch
-from transformers import (
-    LlavaForConditionalGeneration, 
-    LlavaProcessor,
-    AutoTokenizer,
-    AutoModelForCausalLM,
-    BitsAndBytesConfig
-)
-from diffusers import StableDiffusionPipeline
-from deepgram import Deepgram
 import requests
-from PyPDF2 import PdfReader
-from bs4 import BeautifulSoup
+import base64
+import gradio as gr
 import tempfile
 import logging
-import creds
+import numpy as np
+import soundfile as sf
+import pickle
+from io import BytesIO
 from PIL import Image
 
-# Configure logging
+# Import utility functions (assuming they are correctly placed or copied)
+from deepgram import Deepgram
+from PyPDF2 import PdfReader
+from bs4 import BeautifulSoup
+from google.cloud import aiplatform
+# from tangoflux import TangoFluxInference # Assuming this exists if uncommented
+
+# --- Basic Logging Setup ---
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- Hardware Configuration ---
-DEVICE = "cpu"
-if torch.cuda.is_available():
-    DEVICE = "cuda"
-elif torch.backends.mps.is_available():
-    DEVICE = "mps"
+# --------------------------
+# GCP CONFIG (Vertex AI) - Copied from Streamlit
+# --------------------------
+# TODO: Replace with your actual Project ID if different or use environment variables
+PROJECT_ID = "stable-furnace-451600-r8"
+# TODO: Replace with your actual Region if different or use environment variables
+REGION = "us-central1"
 
-# --- Model Quantization Config ---
-bnb_config = None
-if DEVICE == "cpu":
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.float16
-    )
+# TODO: Ensure these Endpoint IDs are correct for your GCP project
+LLaVA_ENDPOINT_ID = "663829045758132224"
+SD_ENDPOINT_ID = "326622023658766336"
+MISTRAL_ENDPOINT_ID = "1636043615316738048"
 
-def load_model(model_name, model_class, **kwargs):
-    """Safe loader for models without triggering offload-related conflicts"""
+# LLaVA API URL (used for manual REST call)
+LLAVA_API_URL = f"https://{REGION}-aiplatform.googleapis.com/v1/projects/{PROJECT_ID}/locations/{REGION}/endpoints/{LLaVA_ENDPOINT_ID}:predict"
+
+# --------------------------
+# Deepgram API Key - Copied from Streamlit
+# --------------------------
+# TODO: It's better practice to load secrets from environment variables or a secure vault
+DEEPGRAM_API_KEY = "16b691e04307a2eb6f22037aa88ba0989dbee035" # Use creds.DEEPGRAM_API_KEY if defined
+
+# ----------------------------------
+# Vertex AI Client Initialization
+# ----------------------------------
+# Initialize globally once when the script starts
+try:
+    aiplatform.init(project=PROJECT_ID, location=REGION)
+    mistral_endpoint = aiplatform.Endpoint(endpoint_name=MISTRAL_ENDPOINT_ID)
+    sd_endpoint = aiplatform.Endpoint(endpoint_name=SD_ENDPOINT_ID)
+    logger.info("Vertex AI Endpoints initialized successfully.")
+except Exception as e:
+    logger.error(f"Failed to initialize Vertex AI Endpoints: {e}")
+    # Set endpoints to None so functions can check and fail gracefully
+    mistral_endpoint = None
+    sd_endpoint = None
+    # Optionally, raise the exception or exit if Vertex AI is critical
+    # raise e
+
+# ----------------------------------
+# Backend Processing Functions
+# (Adapted from Streamlit code)
+# ----------------------------------
+
+# --- Deepgram Functions ---
+async def transcribe_audio_async(audio_filepath):
+    """Async function for Deepgram transcription."""
+    if not DEEPGRAM_API_KEY:
+        return "Error: Deepgram API Key not configured."
     try:
-        if DEVICE == "cpu":
-            # Avoid device_map if using CPU
-            model = model_class.from_pretrained(
-                model_name,
-                torch_dtype=torch.float32,
-                **kwargs
-            )
-            model.to("cpu")  # Safe manual move
-        elif DEVICE == "mps":
-            # MPS supports float32 only
-            model = model_class.from_pretrained(
-                model_name,
-                device_map={"": DEVICE},
-                torch_dtype=torch.float32,
-                **kwargs
-            )
-        else:  # GPU
-            model = model_class.from_pretrained(
-                model_name,
-                device_map="auto",  # Offload to GPU only
-                torch_dtype=torch.float16,
-                **kwargs
-            )
-        return model.eval()
+        dg_client = Deepgram(DEEPGRAM_API_KEY)
+        with open(audio_filepath, 'rb') as audio_file:
+            buffer_data = audio_file.read()
+
+        source = {"buffer": buffer_data, "mimetype": "audio/wav"} # Adjust mimetype if needed based on input component
+        options = {"punctuate": True}
+        response = await dg_client.transcription.prerecorded(source, options)
+        transcription = response['results']['channels'][0]['alternatives'][0]['transcript']
+        return transcription
     except Exception as e:
-        logger.error(f"Error loading {model_name}: {str(e)}")
-        raise
+        logger.error(f"Error during transcription: {str(e)}")
+        return f"Error during transcription: {str(e)}"
 
-# Load models on demand
-class ModelManager:
-    # def __init__(self):
-    #     self.models = {}
-    #     # Initialize Deepgram client for v2.12.0
-    #     from deepgram import DeepgramClient
-    #     self.deepgram = DeepgramClient("16b691e04307a2eb6f22037aa88ba0989dbee035")
-    def __init__(self):
-        self.models = {}
-        # For Deepgram v2.12.0
-        from deepgram import Deepgram
-        self.deepgram = Deepgram("16b691e04307a2eb6f22037aa88ba0989dbee035")
-  
-    def get_llava(self):
-        if "llava" not in self.models:
-            processor = LlavaProcessor.from_pretrained("llava-hf/llava-1.5-7b-hf")
-            model = load_model(
-                "llava-hf/llava-1.5-7b-hf",
-                LlavaForConditionalGeneration
-            )
-            self.models["llava"] = (processor, model)
-        return self.models["llava"]
-    
-    def get_sd(self):
-        if "sd" not in self.models:
-            self.models["sd"] = StableDiffusionPipeline.from_pretrained(
-                "runwayml/stable-diffusion-v1-5",
-                torch_dtype=torch.float16 if DEVICE == "cuda" else torch.float32
-            ).to(DEVICE)
-        return self.models["sd"]
-    
-    def get_mistral(self):
-        if "mistral" not in self.models:
-            tokenizer = AutoTokenizer.from_pretrained("mistralai/Mistral-7B-v0.1")
-            model = load_model(
-                "mistralai/Mistral-7B-v0.1",
-                AutoModelForCausalLM
-            )
-            self.models["mistral"] = (tokenizer, model)
-        return self.models["mistral"]
-    
-    def cleanup(self):
-        for name in list(self.models.keys()):
-            del self.models[name]
-            torch.cuda.empty_cache() if DEVICE == "cuda" else None
-            logger.info(f"Unloaded {name} model")
-
-model_manager = ModelManager()
-
-# --- Processing Functions ---
-async def safe_transcribe(audio_path):
-    """Memory-safe audio transcription"""
+def handle_speech_to_text_sync(audio_filepath):
+    """Sync wrapper for Gradio."""
+    if audio_filepath is None:
+        return "Error: No audio file provided."
     try:
-        with open(audio_path, "rb") as f:
-            source = {"buffer": f.read(), "mimetype": 'audio/wav'}
-        
-        response = await model_manager.deepgram.transcription.prerecorded(
-            source,
-            {"punctuate": True, "model": "nova-2"}
-        )
-        return response['results']['channels'][0]['alternatives'][0]['transcript']
+        # Gradio might provide formats other than wav, consider conversion if needed
+        # For simplicity, assume input is compatible or handle conversion
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(transcribe_audio_async(audio_filepath))
+        loop.close()
+        return result
     except Exception as e:
-        logger.error(f"Transcription error: {str(e)}")
-        return None
-    finally:
-        del source
-        torch.cuda.empty_cache() if DEVICE == "cuda" else None
+        logger.error(f"Sync STT Handler Error: {e}")
+        return f"Error: {e}"
 
-def process_image(image_path):
-    """Image processing with automatic cleanup"""
-    try:
-        processor, model = model_manager.get_llava()
-        image = Image.open(image_path).convert("RGB")
-        
-        inputs = processor(
-            text="Describe this image: <image>", 
-            images=image, 
-            return_tensors="pt"
-        ).to(DEVICE)
-        
-        generated_ids = model.generate(**inputs, max_new_tokens=100)
-        caption = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
-        
-        return caption
-    finally:
-        del inputs, image
-        torch.cuda.empty_cache() if DEVICE == "cuda" else None
 
-def process_pdf(file_path):
+def generate_audio_from_text(text):
+    """Generates audio using Deepgram TTS and saves to a temporary file."""
+    if not DEEPGRAM_API_KEY:
+        return "Error: Deepgram API Key not configured.", None
+    if not text:
+        return "Error: No text provided.", None
     try:
-        with open(file_path, "rb") as f:
-            reader = PdfReader(f)
-            return "\n".join([page.extract_text() for page in reader.pages])
+        url = "https://api.deepgram.com/v1/speak"
+        headers = {"Authorization": f"Token {DEEPGRAM_API_KEY}", "Content-Type": "application/json"}
+        payload = {"text": text}
+        response = requests.post(url, headers=headers, json=payload)
+
+        if response.status_code == 200:
+            # Save to a temporary file for Gradio
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as temp_audio_file:
+                temp_audio_file.write(response.content)
+                temp_audio_path = temp_audio_file.name
+            logger.info(f"Generated audio saved to {temp_audio_path}")
+            # Return the path for gr.Audio and gr.DownloadButton
+            return temp_audio_path, temp_audio_path # Path for audio player, Path for download
+        else:
+            logger.error(f"Failed to generate audio: {response.status_code} - {response.text}")
+            return f"Error: Failed to generate audio ({response.status_code})", None
     except Exception as e:
-        return f"PDF processing error: {str(e)}"
+        logger.error(f"Error generating audio: {str(e)}")
+        return f"Error generating audio: {str(e)}", None
 
-def process_url(url):
+# --- Vertex AI Functions ---
+
+def generate_caption_vertex(image_input, prompt="Describe this image:"):
+    """LLaVA image captioning via Vertex AI REST API."""
+    if image_input is None:
+        return "Error: No image provided."
+
+    # Gradio gr.Image(type="filepath") provides a path
     try:
-        response = requests.get(url, timeout=10)
+        with open(image_input, "rb") as img_file:
+            image_bytes = img_file.read()
+    except Exception as e:
+        logger.error(f"Error reading image file: {e}")
+        return f"Error reading image file: {e}"
+
+    if "<image>" not in prompt:
+        prompt += " <image>"
+    image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+    payload = {"instances": [{"image_base64": image_b64, "prompt": prompt}]}
+
+    try:
+        # Get token dynamically - requires gcloud CLI to be installed and configured
+        token = os.popen("gcloud auth print-access-token").read().strip()
+        if not token:
+            return "Error: Could not get gcloud access token. Please run 'gcloud auth login' and 'gcloud auth application-default login'."
+
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        response = requests.post(LLAVA_API_URL, headers=headers, json=payload)
+
+        response.raise_for_status() # Raise an exception for bad status codes (4xx or 5xx)
+
+        result = response.json()
+        # Check if predictions array exists and is not empty
+        if "predictions" in result and isinstance(result["predictions"], list) and len(result["predictions"]) > 0:
+             # Safely get the caption
+             caption = result["predictions"][0].get("caption", "No caption returned in prediction.")
+             return caption
+        else:
+            logger.error(f"Unexpected response format from LLaVA endpoint: {result}")
+            return "Error: Unexpected response format from captioning model."
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"LLaVA API Request Error: {e}")
+        # Attempt to get more detailed error from response if available
+        error_detail = ""
+        try:
+            error_detail = e.response.text
+        except:
+            pass # Ignore if we can't get response body
+        return f"Error calling captioning API: {e}. Details: {error_detail}"
+    except Exception as e:
+        logger.error(f"Captioning error: {str(e)}")
+        return f"Captioning error: {str(e)}"
+
+
+def generate_image_vertex(prompt: str):
+    """Generates image using Vertex AI Stable Diffusion Endpoint."""
+    if sd_endpoint is None:
+         return None, "Error: Stable Diffusion Endpoint not initialized."
+    if not prompt:
+        return None, "Error: Please enter a prompt."
+
+    try:
+        response = sd_endpoint.predict(instances=[{"prompt": prompt}])
+        # Check response structure (this might vary based on exact model deployment)
+        if not response.predictions or not isinstance(response.predictions, list) or len(response.predictions) == 0:
+            logger.error(f"Unexpected SD response format: {response}")
+            return None, "Error: Received unexpected response format from image generation model."
+
+        # Safely access the prediction dictionary and the image data
+        prediction = response.predictions[0]
+        if not isinstance(prediction, dict) or "image_base64" not in prediction:
+             logger.error(f"Prediction dictionary missing 'image_base64': {prediction}")
+             return None, "Error: Prediction data missing required image information."
+
+        base64_image = prediction["image_base64"]
+        if not base64_image:
+            return None, "Error: Image generation failed or no image returned."
+
+        image_bytes = base64.b64decode(base64_image)
+        img = Image.open(BytesIO(image_bytes))
+        return img, None # Return PIL image and no error
+    except Exception as e:
+        logger.error(f"Image generation error: {str(e)}")
+        # Check for specific Google Cloud API errors if needed
+        return None, f"Image generation error: {str(e)}" # Return None image and error message
+
+
+def generate_text_vertex(prompt: str):
+    """Generates text using Vertex AI Mistral Endpoint."""
+    if mistral_endpoint is None:
+        return "Error: Mistral Endpoint not initialized."
+    if not prompt:
+        return "Error: Please enter a prompt."
+
+    try:
+        # Construct the payload according to Mistral's expected format
+        # This might need adjustment based on the specific Mistral model deployment
+        # Common format is a list of instances, each with a 'prompt' field
+        instances = [{"prompt": prompt}]
+        response = mistral_endpoint.predict(instances=instances)
+
+        # Check response structure
+        if not response.predictions or not isinstance(response.predictions, list) or len(response.predictions) == 0:
+            logger.error(f"Unexpected Mistral response format: {response}")
+            return "Error: Received unexpected response format from text generation model."
+
+        # Extract the generated text (adapt based on actual response structure)
+        # Often it's the first element of the predictions list
+        generated_text = response.predictions[0]
+        # Sometimes the prediction itself is a dict, e.g., {'generated_text': '...'}
+        if isinstance(generated_text, dict):
+             # Adjust key if necessary, e.g., 'text', 'output', 'content'
+             generated_text = generated_text.get('generated_text', generated_text.get('content', str(generated_text)))
+
+        return str(generated_text) # Ensure it's a string
+    except Exception as e:
+        logger.error(f"Text generation error: {str(e)}")
+        return f"Text generation error: {str(e)}"
+
+# --- PDF and URL Functions ---
+def extract_text_from_pdf(pdf_file_obj):
+    """Extracts text from PDF file object provided by Gradio."""
+    if pdf_file_obj is None:
+        return "Error: No PDF file provided."
+    try:
+        # pdf_file_obj.name contains the path to the temporary file
+        reader = PdfReader(pdf_file_obj.name)
+        pdf_text = ""
+        for page in reader.pages:
+            page_text = page.extract_text()
+            if page_text: # Add text only if extraction was successful
+                 pdf_text += page_text + "\n"
+        return pdf_text if pdf_text else "No text could be extracted from this PDF."
+    except Exception as e:
+        logger.error(f"Error extracting text from PDF: {str(e)}")
+        return f"Error extracting text from PDF: {str(e)}"
+
+def extract_text_from_url(url):
+    """Extracts paragraph text from a URL."""
+    if not url:
+        return "Error: No URL provided."
+    try:
+        # Add http:// if missing
+        if not url.startswith(('http://', 'https://')):
+            url = 'http://' + url
+
+        response = requests.get(url, timeout=10, headers={'User-Agent': 'Mozilla/5.0'}) # Add user-agent
+        response.raise_for_status() # Check for HTTP errors
+
+        # Check content type
+        if 'text/html' not in response.headers.get('Content-Type', ''):
+            return f"Error: URL content type is not HTML ({response.headers.get('Content-Type', 'N/A')})"
+
         soup = BeautifulSoup(response.text, "html.parser")
-        return "\n\n".join([p.get_text() for p in soup.find_all("p")])
+        paragraphs = soup.find_all("p")
+        content = "\n".join([para.get_text().strip() for para in paragraphs if para.get_text().strip()])
+        return content if content else "No paragraph text found at the URL."
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Failed to fetch URL content: {e}")
+        return f"Error fetching URL: {e}"
     except Exception as e:
-        return f"URL processing error: {str(e)}"
+        logger.error(f"Error extracting content from URL: {str(e)}")
+        return f"Error extracting content from URL: {str(e)}"
 
-async def process_input(modality, text_query, image_path, audio_path, pdf_file, url_input, tts_text):
-    """Main processing function handling all modalities"""
-    outputs = {"text": "", "image": None, "audio": None}
-    
+# --- TangoFlux Functions (Placeholder - uncomment and ensure library/model exists) ---
+# Assuming 'tangoflux' library and model file exist at the specified path
+TANGOFLUX_MODEL_PATH = "models/tangoflux/tangoflux_model.pkl"
+
+def load_tangoflux_model():
+    """Loads the TangoFlux model."""
+    if not os.path.exists(TANGOFLUX_MODEL_PATH):
+        logger.warning(f"TangoFlux model not found at {TANGOFLUX_MODEL_PATH}. Text-to-Sound disabled.")
+        return None
     try:
-        if modality == "Text" and text_query:
-            # Text generation
-            tokenizer, model = model_manager.get_mistral()
-            inputs = tokenizer(text_query, return_tensors="pt").to(DEVICE)
-            generated = model.generate(
-                **inputs,
-                max_new_tokens=150,
-                do_sample=True,
-                top_k=50,
-                temperature=0.7
-            )
-            outputs["text"] = tokenizer.decode(generated[0], skip_special_tokens=True)
-            
-            if "generate an image" in text_query.lower():
-                pipe = model_manager.get_sd()
-                outputs["image"] = pipe(text_query).images[0]
+        with open(TANGOFLUX_MODEL_PATH, "rb") as f:
+            model = pickle.load(f)
+        logger.info("TangoFlux model loaded.")
+        return model
+    except Exception as e:
+        logger.error(f"Error loading TangoFlux model: {e}")
+        return None
 
-        elif modality == "Image" and image_path:
-            caption = process_image(image_path)
-            outputs["text"] = caption
-            pipe = model_manager.get_sd()
-            outputs["image"] = pipe(caption).images[0]
+# Load model globally if desired (can take time) or load within handler
+# tango_model = load_tangoflux_model() # Optional global load
 
-        elif modality == "Audio" and audio_path:
-            transcript = await safe_transcribe(audio_path)
-            outputs["text"] = transcript
+def generate_sound_tangoflux(text_prompt):
+    """Generates sound using TangoFlux model."""
+    # Load model here if not loaded globally
+    tango_model = load_tangoflux_model()
+    if tango_model is None:
+        return None, "Error: TangoFlux model could not be loaded."
+    if not text_prompt:
+         return None, "Error: Please enter a sound prompt."
 
-        elif modality == "PDF" and pdf_file:
-            with tempfile.NamedTemporaryFile(delete=False) as tmp:
-                tmp.write(pdf_file.read())
-                outputs["text"] = process_pdf(tmp.name)
-            os.unlink(tmp.name)
+    try:
+        # Adjust steps/duration as needed
+        # Assuming model.generate returns a numpy array (waveform) and sample rate
+        # Modify based on actual TangoFlux library API
+        # audio_waveform, sample_rate = tango_model.generate(text_prompt, steps=5, duration=2) # Example
+        audio_waveform = np.random.rand(44100 * 2) # Placeholder: Replace with actual model call
+        sample_rate = 44100 # Placeholder: Replace with actual model sample rate
 
-        elif modality == "URL" and url_input:
-            outputs["text"] = process_url(url_input)
+        if not isinstance(audio_waveform, np.ndarray):
+            return None, "Error: Sound generation did not return a valid audio format."
 
-        elif modality == "Text-to-Audio" and tts_text:
-            response = requests.post(
-                "https://api.deepgram.com/v1/speak",
-                headers={"Authorization": f"Token 16b691e04307a2eb6f22037aa88ba0989dbee035"},
-                json={"text": tts_text}
-            )
-            if response.status_code == 200:
-                outputs["audio"] = ("audio.mp3", response.content)
+        # Save the generated audio to a temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_audio_file:
+            sf.write(temp_audio_file.name, audio_waveform, sample_rate)
+            temp_audio_path = temp_audio_file.name
+        logger.info(f"Generated sound saved to {temp_audio_path}")
+        return temp_audio_path, None # Return path and no error
 
     except Exception as e:
-        logger.error(f"Processing error: {str(e)}")
-        outputs["text"] = f"Error: {str(e)}"
-    
-    return outputs["text"], outputs["image"], outputs["audio"]
+        logger.error(f"Error generating sound: {str(e)}")
+        return None, f"Error generating sound: {str(e)}"
 
 
-# --- Gradio Interface ---
-with gr.Blocks(title="Multimodal Generator", theme=gr.themes.Soft()) as demo:
-    gr.Markdown("# 🚀 Multimodal Content Generator")
-    
-    with gr.Row():
-        modality = gr.Dropdown(
-            label="Input Type",
-            choices=["Text", "Image", "Audio", "PDF", "URL", "Text-to-Audio"],
-            value="Text"
-        )
-    
-    with gr.Tabs():
-        with gr.Tab("Text"):
-            text_input = gr.Textbox(label="Input Text", lines=3)
-        
-        with gr.Tab("Image"):
-            image_input = gr.Image(type="filepath")
-        
-        with gr.Tab("Audio"):
-            audio_input = gr.Audio(type="filepath")
-        
-        with gr.Tab("PDF"):
-            pdf_input = gr.File(file_types=[".pdf"])
-        
-        with gr.Tab("URL"):
-            url_input = gr.Textbox(label="Website URL")
-        
-        with gr.Tab("Text-to-Audio"):
-            tts_input = gr.Textbox(label="Text to Convert", lines=3)
-    
-    submit_btn = gr.Button("Generate", variant="primary")
-    
-    with gr.Row():
-        text_output = gr.Textbox(label="Output Text", interactive=False)
-        image_output = gr.Image(label="Generated Image", visible=False)
-        audio_output = gr.Audio(label="Generated Audio", visible=False)
-    
-    # Dynamic UI Updates
-    modality.change(
-        lambda x: (
-            gr.Image(visible=x in ["Image", "Text"]),
-            gr.Audio(visible=x == "Text-to-Audio")
-        ),
-        inputs=modality,
-        outputs=[image_output, audio_output]
+# --------------------------
+# Gradio UI Definition
+# --------------------------
+with gr.Blocks(title="Multimodal Playground", theme=gr.themes.Soft()) as demo:
+    gr.Markdown("# Multimodal Content Generator")
+    gr.Markdown("Select a task to generate content.")
+
+    mode = gr.Dropdown(
+        label="Choose Task",
+        choices=[
+            "Speech to Text",
+            "Text to Speech",
+            "Image Generation",
+            "Text Generation",
+            "Image Captioning",
+            "PDF Upload",
+            "URL Content Extraction",
+            "Text to Sound Generation"
+        ],
+        value="Text Generation", # Default task
+        interactive=True
     )
-    
-    @demo.load
-    def init_models():
-        logger.info("Initializing core models...")
-        model_manager.get_mistral()
-        if DEVICE == "cuda":
-            model_manager.get_sd()
 
-    submit_btn.click(
-        fn=lambda *args: asyncio.run(process_input(*args)),
-        inputs=[modality, text_input, image_input, audio_input, pdf_input, url_input, tts_input],
-        outputs=[text_output, image_output, audio_output]
+    # --- Task Interfaces ---
+
+    # Speech to Text
+    with gr.Column(visible=False) as speech_col:
+        with gr.Row():
+            audio_input_stt = gr.Audio(label="Upload Audio File", type="filepath", sources=["upload", "microphone"])
+        with gr.Row():
+            transcribe_btn = gr.Button("Transcribe Audio")
+        with gr.Row():
+            transcription_output = gr.Textbox(label="Transcription", lines=5, interactive=False)
+
+    # Text to Speech
+    with gr.Column(visible=False) as tts_col:
+        with gr.Row():
+            text_input_tts = gr.Textbox(label="Enter Text for Speech", lines=3)
+        with gr.Row():
+            tts_btn = gr.Button("Generate Speech")
+        with gr.Row():
+            # Output audio player
+            audio_output_tts = gr.Audio(label="Generated Audio", type="filepath", interactive=False)
+        with gr.Row():
+             # Output for download button (uses the same path)
+             tts_download_path = gr.State(None) # Store path for download
+             tts_download_btn = gr.DownloadButton(label="Download Audio", visible=False)
+
+
+    # Image Generation
+    with gr.Column(visible=False) as img_gen_col:
+        with gr.Row():
+            img_prompt_gen = gr.Textbox(label="Enter Image Prompt", value="A photo of an astronaut riding a horse on the moon")
+        with gr.Row():
+            generate_img_btn = gr.Button("Generate Image")
+        with gr.Row():
+            image_output_gen = gr.Image(label="Generated Image", type="pil", interactive=False) # Output as PIL
+            img_gen_error_output = gr.Textbox(label="Error", visible=False, interactive=False)
+
+
+    # Text Generation
+    with gr.Column(visible=False) as text_gen_col:
+        with gr.Row():
+            text_prompt_gen = gr.Textbox(label="Enter Text Prompt", value="Write a short poem about a rainy day.")
+        with gr.Row():
+            generate_text_btn = gr.Button("Generate Text")
+        with gr.Row():
+            text_output_gen = gr.Textbox(label="Generated Text", lines=8, interactive=False)
+
+    # Image Captioning
+    with gr.Column(visible=False) as img_cap_col:
+        with gr.Row():
+             image_input_cap = gr.Image(label="Upload Image", type="filepath", sources=["upload"]) # Needs filepath for reading
+        with gr.Row():
+             caption_prompt_cap = gr.Textbox(label="Optional: Modify Caption Prompt", value="Describe this image in detail:")
+        with gr.Row():
+             caption_btn = gr.Button("Generate Caption")
+        with gr.Row():
+             caption_output_cap = gr.Textbox(label="Generated Caption", lines=4, interactive=False)
+
+    # PDF Upload
+    with gr.Column(visible=False) as pdf_col:
+        with gr.Row():
+            pdf_input_ext = gr.File(label="Upload PDF File", file_types=[".pdf"])
+        with gr.Row():
+            pdf_output_ext = gr.Textbox(label="Extracted Text", lines=10, interactive=False)
+
+    # URL Content Extraction
+    with gr.Column(visible=False) as url_col:
+        with gr.Row():
+            url_input_ext = gr.Textbox(label="Enter URL (e.g., https://www.example.com)")
+        with gr.Row():
+            extract_btn = gr.Button("Extract Content from URL")
+        with gr.Row():
+            url_output_ext = gr.Textbox(label="Extracted Content", lines=10, interactive=False)
+
+    # Text to Sound Generation
+    with gr.Column(visible=False) as sound_col:
+        with gr.Row():
+            sound_prompt_gen = gr.Textbox(label="Enter Sound Description", value="Ocean waves crashing on a beach")
+        with gr.Row():
+            sound_btn = gr.Button("Generate Sound")
+        with gr.Row():
+            sound_output_gen = gr.Audio(label="Generated Sound", type="filepath", interactive=False)
+            sound_gen_error_output = gr.Textbox(label="Error", visible=False, interactive=False)
+
+
+    # --- Dynamic Visibility Logic ---
+    task_map = {
+        "Speech to Text": speech_col,
+        "Text to Speech": tts_col,
+        "Image Generation": img_gen_col,
+        "Text Generation": text_gen_col,
+        "Image Captioning": img_cap_col,
+        "PDF Upload": pdf_col,
+        "URL Content Extraction": url_col,
+        "Text to Sound Generation": sound_col
+    }
+
+    def update_visibility(selected_mode):
+        updates = {}
+        for task_name, component in task_map.items():
+            updates[component] = gr.Column(visible=(task_name == selected_mode))
+        return updates
+
+    mode.change(
+        fn=update_visibility,
+        inputs=mode,
+        outputs=list(task_map.values())
     )
-# Add missing process_input function
 
+    # --- Event Handlers ---
 
+    # Speech to Text
+    transcribe_btn.click(
+        fn=handle_speech_to_text_sync,
+        inputs=[audio_input_stt],
+        outputs=[transcription_output]
+    )
 
-# --- Execution ---
+    # Text to Speech
+    def tts_wrapper(text):
+        audio_path, download_uri = generate_audio_from_text(text)
+        # Show download button only if generation succeeded
+        show_download = download_uri is not None
+        return {
+            audio_output_tts: gr.Audio(value=audio_path, visible=audio_path is not None),
+            tts_download_path: download_uri, # Store path for download button
+            tts_download_btn: gr.DownloadButton(value=download_uri, visible=show_download) # Update download button
+        }
+    tts_btn.click(
+        fn=tts_wrapper,
+        inputs=[text_input_tts],
+        outputs=[audio_output_tts, tts_download_path, tts_download_btn] # Update player, path state, and download button
+    )
+
+    # Image Generation
+    def img_gen_wrapper(prompt):
+        img, error = generate_image_vertex(prompt)
+        return {
+            image_output_gen: gr.Image(value=img, visible=img is not None),
+            img_gen_error_output: gr.Textbox(value=error, visible=error is not None)
+        }
+    generate_img_btn.click(
+        fn=img_gen_wrapper,
+        inputs=[img_prompt_gen],
+        outputs=[image_output_gen, img_gen_error_output]
+    )
+
+    # Text Generation
+    generate_text_btn.click(
+        fn=generate_text_vertex,
+        inputs=[text_prompt_gen],
+        outputs=[text_output_gen]
+    )
+
+    # Image Captioning
+    caption_btn.click(
+        fn=generate_caption_vertex,
+        inputs=[image_input_cap, caption_prompt_cap],
+        outputs=[caption_output_cap]
+    )
+
+    # PDF Upload
+    pdf_input_ext.upload( # Use upload for immediate processing
+        fn=extract_text_from_pdf,
+        inputs=[pdf_input_ext],
+        outputs=[pdf_output_ext]
+    )
+
+    # URL Content Extraction
+    extract_btn.click(
+        fn=extract_text_from_url,
+        inputs=[url_input_ext],
+        outputs=[url_output_ext]
+    )
+
+    # Text to Sound Generation
+    def sound_gen_wrapper(prompt):
+         path, error = generate_sound_tangoflux(prompt)
+         return {
+             sound_output_gen: gr.Audio(value=path, visible=path is not None),
+             sound_gen_error_output: gr.Textbox(value=error, visible=error is not None)
+         }
+    sound_btn.click(
+        fn=sound_gen_wrapper,
+        inputs=[sound_prompt_gen],
+        outputs=[sound_output_gen, sound_gen_error_output]
+    )
+
+# --- Launch the Gradio App ---
 if __name__ == "__main__":
-    try:
-        demo.queue().launch(
-            server_port=7860,
-            show_error=True,
-            share=False
-        )
-    finally:
-        model_manager.cleanup()
-        logger.info("Cleanup completed")
+    logger.info("Starting Gradio application...")
+    # Set share=True if you need a public link (be careful with security/API keys)
+    demo.queue().launch(server_port=7860, show_error=True, share=False)
+    logger.info("Gradio application stopped.")
