@@ -29,9 +29,10 @@ _MODELS = {
     "gemini": {"type": "vertex",   "id": "gemini-2.0-flash-lite-001"},
     # Together AI serverless chat models
     "mistral": {"type": "together", "id": "mistralai/Mistral-7B-Instruct-v0.2"},
-    "deepseek":{"type": "together", "id": "deepseek-ai/DeepSeek-R1-Distill-Llama-70B-free"},
+    "deepseek":{"type": "together", "id": "deepseek-ai/DeepSeek-V3"},
 }
-
+# deepseek-ai/DeepSeek-V3
+#deepseek-ai/DeepSeek-R1-Distill-Llama-70B-free
 # ─────────────────────────────────────────────────────────────
 # 2.  Together AI token
 # ─────────────────────────────────────────────────────────────
