@@ -1,5 +1,6 @@
 ## Architecture
 <img width="596" height="214" alt="image" src="https://github.com/user-attachments/assets/a02dc317-a8e0-4194-b706-59962cfd8b2e" />
+
 ## Data Collection
 A unified pipeline for generating social media content using text, image, and audio data. Supports Retrieval-Augmented Generation (RAG), multimodal processing, and real-time evaluation. Designed to streamline the creation of blogs, tweets, captions, and video narratives across platforms.
 Curated datasets across modalities:
@@ -7,40 +8,50 @@ Curated datasets across modalities:
 - Image: Flickr8k
 - Audio: Common Voice
 Datasets selected to align with content types (e.g., blogs, tweets, captions, podcasts, short videos) and unified into `.jsonl` format to support RAG-enabled retrieval.
+
 ## Preprocessing & Cleaning
 - Text: Noise removal, normalization, metadata extraction
 - Image: Caption cleaning, lexicon creation
 - Audio: Metadata filtering, irrelevant attribute removal
 - All data categorized and cleaned for downstream modeling
+
 ## Transformation & Embedding
 - Text chunked and embedded using Sentence Transformers
 - FAISS vector store used for fast retrieval
 - Dataset split: 70% training, 15% validation, 15% testing
 - Total corpus size: 2.75M+ RAG-ready records
-## Machine Learning Modeling
-### Modal-Specific Models
 
+## Machine Learning Modeling
+
+### Modal-Specific Models
 - Text Generation: DeepSeek, Gemini, LLaMA, Mistral
 - Image Generation: Stable Diffusion
 - Audio Generation: Deepgram (TTS)
 - Image Captioning: BLIP, GIT, LLaVA
 - Speech-to-Text: Whisper, Deepgram
 - PDF Parsing: PyMuPDF, pypdf-llama-parser
-### Enhancements
 
+### Enhancements
 - Fine-tuned models for domain-specific accuracy
 - Modular dispatch across modalities
 - RAG-enabled inference via FAISS + Vertex AI
 - Hot-swappable LLM wrapper for BASE and RAG variants
+
 ### Performance Comparison
 - BASE models: Better grammar and latency
 - RAG models: More creative/contextual but slightly slower
+
 ## Evaluation Metrics : LLM-as-a-Judge
-Correctness: Evaluates grammar, syntax, and clarity of generated text; ensures outputs are fluent and structurally sound.
+- Correctness: Evaluates grammar, syntax, and clarity of generated text; ensures outputs are fluent and structurally sound.
+
 <img width="374" height="181" alt="image" src="https://github.com/user-attachments/assets/794668ac-97a1-44fb-9f89-6d59939025a5" />
-Faithfulness: Measures how accurately the output reflects the original input or retrieved context, without hallucinations.
+
+- Faithfulness: Measures how accurately the output reflects the original input or retrieved context, without hallucinations.
+
 <img width="312" height="150" alt="image" src="https://github.com/user-attachments/assets/4c43354c-342f-4bd1-8a09-f935b0946b6e" />
-Relevance: Assesses how well the output aligns with the user’s prompt or intended topic.
+
+- Relevance: Assesses how well the output aligns with the user’s prompt or intended topic.
+
 <img width="325" height="152" alt="image" src="https://github.com/user-attachments/assets/5ca5f0e3-0d00-419a-885f-ee7c5826a620" />
 Helpfulness: Gauges whether the output is informative, actionable, or useful in accomplishing the user's goal.
 <img width="316" height="143" alt="image" src="https://github.com/user-attachments/assets/4009a3df-692f-4773-9f46-bee71c7cbcb9" />
