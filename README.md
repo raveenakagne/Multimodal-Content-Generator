@@ -103,7 +103,7 @@ Datasets selected to align with content types (e.g., blogs, tweets, captions, po
 - Top Chart: Relevance Score all models maintain high mean relevance (>4.5), with minor drop in RAG variants.
 - Bottom Chart: Latency BASE models are generally faster; DeepSeek RAG has the highest variance (~35–38ms), while others remain under 10ms.
 
-<img width="500" height="700" alt="image" src="https://github.com/user-attachments/assets/55e3bbd6-fde7-47ca-8023-a6075209968d" />
+<img width="300" height="500" alt="image" src="https://github.com/user-attachments/assets/55e3bbd6-fde7-47ca-8023-a6075209968d" />
 
 
 
