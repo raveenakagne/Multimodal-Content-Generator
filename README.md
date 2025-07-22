@@ -48,23 +48,23 @@ Datasets selected to align with content types (e.g., blogs, tweets, captions, po
 
 - Faithfulness: Measures how accurately the output reflects the original input or retrieved context, without hallucinations.
 
-<img width="312" height="150" alt="image" src="https://github.com/user-attachments/assets/4c43354c-342f-4bd1-8a09-f935b0946b6e" />
+<img width="374" height="181" alt="image" src="https://github.com/user-attachments/assets/4c43354c-342f-4bd1-8a09-f935b0946b6e" />
 
 - Relevance: Assesses how well the output aligns with the user’s prompt or intended topic.
 
-<img width="325" height="152" alt="image" src="https://github.com/user-attachments/assets/5ca5f0e3-0d00-419a-885f-ee7c5826a620" />
+<img width="374" height="181" alt="image" src="https://github.com/user-attachments/assets/5ca5f0e3-0d00-419a-885f-ee7c5826a620" />
 
 - Helpfulness: Gauges whether the output is informative, actionable, or useful in accomplishing the user's goal.
 
-<img width="316" height="143" alt="image" src="https://github.com/user-attachments/assets/4009a3df-692f-4773-9f46-bee71c7cbcb9" />
+<img width="374" height="181" alt="image" src="https://github.com/user-attachments/assets/4009a3df-692f-4773-9f46-bee71c7cbcb9" />
 
 - Truthfulness: Checks for factual accuracy, ensuring generated content aligns with known or retrieved knowledge.
 
-<img width="314" height="141" alt="image" src="https://github.com/user-attachments/assets/4247d4ae-9745-4426-8e44-be6a795c6c39" />
+<img width="374" height="181" alt="image" src="https://github.com/user-attachments/assets/4247d4ae-9745-4426-8e44-be6a795c6c39" />
 
 - Virality: Scores the potential of content to be engaging, creative, and shareable—ideal for social media use cases.
 
-<img width="317" height="170" alt="image" src="https://github.com/user-attachments/assets/a1076599-ecdf-4a7a-9c26-1e25d066883c" />
+<img width="374" height="181" alt="image" src="https://github.com/user-attachments/assets/a1076599-ecdf-4a7a-9c26-1e25d066883c" />
 
 ### Observations
 
@@ -95,18 +95,15 @@ Datasets selected to align with content types (e.g., blogs, tweets, captions, po
 - Asynchronous processing for faster response times and handling concurrent user interactions.
 - Easily deployable on cloud (e.g., Streamlit Sharing, GCP, or Vertex AI) for production use.
 
-## Testing
+## Testing & Visualization 
 
 - The MCG system was tested across all modules Blog, Twitter/X, Instagram, Podcast, Short Video using a shared LLM backend with configurable model selection. Each output was evaluated on multiple quality metrics and latency to ensure robustness and efficiency.
 - Models Evaluated: DeepSeek, Gemini, LLaMA, Mistral (BASE and RAG variants)
 - Metrics Tracked: Relevance, Correctness, Faithfulness, Virality, Latency
-
-## Visualization 
-
 - Top Chart: Relevance Score all models maintain high mean relevance (>4.5), with minor drop in RAG variants.
 - Bottom Chart: Latency BASE models are generally faster; DeepSeek RAG has the highest variance (~35–38ms), while others remain under 10ms.
 
-<img width="163" height="225" alt="image" src="https://github.com/user-attachments/assets/e3ac012a-cf5a-4851-b7e5-f0f3df082c81" />
+<img width="548" height="134" alt="image" src="https://github.com/user-attachments/assets/e3ac012a-cf5a-4851-b7e5-f0f3df082c81" />
 
 
 
